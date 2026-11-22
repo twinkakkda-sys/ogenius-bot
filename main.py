@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import re
+import html
 import sqlite3
 from datetime import datetime, timezone
 
@@ -157,43 +159,44 @@ def quiz_kb(index):
 async def start(message: Message):
     touch_user(message.from_user)
     await message.answer(
-        f"Привет, {message.from_user.first_name or 'ученик'}! 👋\\n\\n"
-        "<b>OGENIUS</b> — твой помощник в подготовке к ОГЭ по русскому языку.\\n\\n"
-        "Здесь можно изучать правила, решать тренировочные задания, разбирать ошибки и задавать вопросы репетитору.\\n\\n"
+        f"Привет, {message.from_user.first_name or 'ученик'}! 👋\n\n"
+        "<b>OGENIUS</b> — твой помощник в подготовке к ОГЭ по русскому языку.\n\n"
+        "Здесь можно изучать правила, решать тренировочные задания, разбирать ошибки и задавать вопросы репетитору.\n\n"
         "Выбирай раздел 👇", reply_markup=main_kb())
 
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
-    await message.answer("Используй кнопки меню. Чтобы вернуться к началу, отправь /start.\\n"
+    await message.answer("Используй кнопки меню. Чтобы вернуться к началу, отправь /start.\n"
                          "Для ИИ-репетитора отправь вопрос обычным сообщением после нажатия кнопки «ИИ-репетитор».")
 
 @dp.callback_query(F.data == "home")
 async def home(call: CallbackQuery):
-    await call.message.edit_text("🏠 <b>Главное меню OGENIUS</b>\\nВыбирай, чем займёмся:", reply_markup=main_kb())
+    await call.message.edit_text("🏠 <b>Главное меню OGENIUS</b>\nВыбирай, чем займёмся:", reply_markup=main_kb())
     await call.answer()
 
 @dp.callback_query(F.data == "learn")
 async def learn(call: CallbackQuery):
-    await call.message.edit_text("📚 <b>Обучение</b>\\nВыбери тему. В каждом конспекте — правило и алгоритм применения.", reply_markup=learn_kb())
+    await call.message.edit_text("📚 <b>Обучение</b>\nВыбери тему. В каждом конспекте — правило и алгоритм применения.", reply_markup=learn_kb())
     await call.answer()
 
 @dp.callback_query(F.data.startswith("lesson:"))
 async def lesson(call: CallbackQuery):
     key=call.data.split(":",1)[1]
     title,body=LESSONS[key]
-    await call.message.edit_text(f"📖 <b>{title}</b>\\n\\n{body}", reply_markup=back_kb())
+    body = re.sub(r"\\*\\*(.*?)\\*\\*", r"<b>\\1</b>", body, flags=re.S)
+    await call.message.edit_text(f"📖 <b>{title}</b>\n\n{body}", reply_markup=back_kb())
     await call.answer()
 
 @dp.callback_query(F.data == "tasks")
 async def tasks(call: CallbackQuery):
-    await call.message.edit_text("🧩 <b>Разбор заданий</b>\\nВыбери номер. Бот объяснит, на что обращать внимание и с чего начинать решение.", reply_markup=task_kb())
+    await call.message.edit_text("🧩 <b>Разбор заданий</b>\nВыбери номер. Бот объяснит, на что обращать внимание и с чего начинать решение.", reply_markup=task_kb())
     await call.answer()
 
 @dp.callback_query(F.data.startswith("task:"))
 async def task(call: CallbackQuery):
     n=int(call.data.split(":")[1])
     title,desc=TASKS[n]
-    await call.message.edit_text(f"🧩 <b>Задание №{n}: {title}</b>\\n\\n{desc}\\n\\n"
+    await call.message.edit_text(f"🧩 <b>Задание №{n}: {title}</b>\n\n{desc}\n\n"
         "💡 <b>Как разбирать:</b> сначала внимательно прочитай условие, затем выдели ключевые слова, выполни нужное действие и только после этого записывай ответ. "
         "Если пришлёшь конкретное условие или фото задания, репетитор поможет разобрать его по шагам.",
         reply_markup=back_kb())
@@ -201,7 +204,7 @@ async def task(call: CallbackQuery):
 
 @dp.callback_query(F.data == "practice")
 async def practice(call: CallbackQuery):
-    await call.message.edit_text("✍️ <b>Практика</b>\\nНебольшая тренировка из 6 вопросов. После ответа покажу правильный вариант и объяснение.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await call.message.edit_text("✍️ <b>Практика</b>\nНебольшая тренировка из 6 вопросов. После ответа покажу правильный вариант и объяснение.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Начать тренировку", callback_data="quiz:0")],
         [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")]
     ]))
@@ -210,7 +213,7 @@ async def practice(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("quiz:"))
 async def quiz(call: CallbackQuery):
     index=int(call.data.split(":")[1])
-    await call.message.edit_text(f"✍️ <b>Вопрос {index+1} из {len(QUIZ)}</b>\\n\\n{QUIZ[index]['q']}", reply_markup=quiz_kb(index))
+    await call.message.edit_text(f"✍️ <b>Вопрос {index+1} из {len(QUIZ)}</b>\n\n{QUIZ[index]['q']}", reply_markup=quiz_kb(index))
     await call.answer()
 
 @dp.callback_query(F.data.startswith("answer:"))
@@ -223,7 +226,7 @@ async def answer(call: CallbackQuery):
     db.execute("UPDATE users SET correct=correct+?, wrong=wrong+? WHERE user_id=?",
                (int(good),int(not good),call.from_user.id))
     db.commit()
-    explanation=f"{col}\\n\\n<b>Правильный ответ:</b> {q['a']+1}. {q['opts'][q['a']]}\\n\\n<b>Разбор:</b> {q['why']}"
+    explanation=f"{col}\n\n<b>Правильный ответ:</b> {q['a']+1}. {q['opts'][q['a']]}\n\n<b>Разбор:</b> {q['why']}"
     if idx+1<len(QUIZ):
         kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Следующий вопрос ➡️", callback_data=f"quiz:{idx+1}")],[InlineKeyboardButton(text="В меню", callback_data="home")]])
     else:
@@ -233,7 +236,7 @@ async def answer(call: CallbackQuery):
 
 @dp.callback_query(F.data == "writing")
 async def writing(call: CallbackQuery):
-    await call.message.edit_text("📝 <b>Изложение и сочинение</b>\\n\\n"
+    await call.message.edit_text("📝 <b>Изложение и сочинение</b>\n\n"
         "В разделе обучения есть пошаговые памятки по сжатому изложению и сочинению-рассуждению. "
         "Можешь прислать свой текст следующим сообщением — ИИ-репетитор проверит его, если подключён ИИ-ключ.",
         reply_markup=back_kb())
@@ -244,12 +247,12 @@ async def stats(call: CallbackQuery):
     row=db.execute("SELECT correct,wrong FROM users WHERE user_id=?",(call.from_user.id,)).fetchone() or (0,0)
     total=row[0]+row[1]
     pct=round(row[0]/total*100) if total else 0
-    await call.message.edit_text(f"📊 <b>Твой прогресс</b>\\n\\n✅ Верных ответов: {row[0]}\\n❌ Ошибок: {row[1]}\\n🎯 Точность: {pct}%\\n\\nПродолжай тренироваться — статистика обновляется после каждого ответа.", reply_markup=back_kb())
+    await call.message.edit_text(f"📊 <b>Твой прогресс</b>\n\n✅ Верных ответов: {row[0]}\n❌ Ошибок: {row[1]}\n🎯 Точность: {pct}%\n\nПродолжай тренироваться — статистика обновляется после каждого ответа.", reply_markup=back_kb())
     await call.answer()
 
 @dp.callback_query(F.data == "tutor")
 async def tutor(call: CallbackQuery):
-    await call.message.edit_text("🤖 <b>ИИ-репетитор OGENIUS</b>\\n\\nНапиши вопрос по русскому языку, пришли условие задания или свой вариант сочинения. Я объясню решение по шагам.\\n\\n"
+    await call.message.edit_text("🤖 <b>ИИ-репетитор OGENIUS</b>\n\nНапиши вопрос по русскому языку, пришли условие задания или свой вариант сочинения. Я объясню решение по шагам.\n\n"
         + ("ИИ подключён. Можешь задавать вопрос сообщением." if OPENAI_API_KEY else "⚠️ ИИ пока не подключён: для него нужно добавить OPENAI_API_KEY в Render → Environment. Пока доступны уроки и тренировки."),
         reply_markup=back_kb())
     await call.answer()
@@ -275,7 +278,7 @@ async def ask_ai(text: str) -> str:
 async def text_message(message: Message):
     touch_user(message.from_user)
     if not OPENAI_API_KEY:
-        await message.answer("Я получил сообщение! 🤝\\n\\nЧтобы включить подробные ответы ИИ, добавьте OPENAI_API_KEY в Render → Environment. "
+        await message.answer("Я получил сообщение! 🤝\n\nЧтобы включить подробные ответы ИИ, добавьте OPENAI_API_KEY в Render → Environment. "
                              "А пока загляни в «Обучение» или «Практика».", reply_markup=main_kb())
         return
     status=await message.answer("🤔 Разбираю вопрос…")
@@ -283,7 +286,7 @@ async def text_message(message: Message):
         result=await ask_ai(message.text)
         # Telegram message limit is 4096 characters.
         for start in range(0,len(result),3900):
-            part=result[start:start+3900]
+            part=html.escape(result[start:start+3900])
             if start==0:
                 await status.edit_text(part)
             else:
