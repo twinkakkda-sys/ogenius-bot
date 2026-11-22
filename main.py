@@ -300,13 +300,82 @@ async def answer(call: CallbackQuery):
     await call.message.edit_text(explanation, reply_markup=kb)
     await call.answer("Ответ принят")
 
+WRITING_TASKS = {
+    "summary": {
+        "title": "Сжатое изложение",
+        "source": "Люди часто думают, что умение слушать собеседника даётся само собой. На самом деле этому нужно учиться. Когда человек внимательно слушает, он не перебивает, старается понять чужую точку зрения и задаёт вопросы по существу. Такое поведение помогает избежать многих недоразумений.\n\nУмение слушать особенно важно в трудных ситуациях. Иногда человеку не нужен готовый совет — ему важно почувствовать, что его услышали и поняли. Спокойный разговор помогает снизить напряжение и найти решение, которое устроит обе стороны.\n\nКроме того, внимательное отношение к словам другого человека укрепляет доверие. Если мы помним о том, что нам рассказали, и относимся к этому бережно, собеседник понимает, что он нам небезразличен. Поэтому умение слушать — не просто вежливость, а важная часть человеческих отношений.",
+        "prompt": "Прослушивания аудио в этой тренировке нет: работай с текстом как с исходником. Прочитай его дважды, выдели три микротемы и напиши сжатое изложение. Сохрани основную мысль и последовательность. Используй не менее двух приёмов сжатия. Минимальный объём — 70 слов."
+    },
+    "essay": {
+        "title": "Сочинение-рассуждение",
+        "source": "Однажды после сильного дождя школьники заметили, что дорожка возле старого дома затоплена. Пожилой сосед пытался самостоятельно убрать воду, но у него ничего не получалось. Ребята могли пройти мимо: они спешили домой. Однако один из них предложил задержаться и помочь. Вскоре к работе присоединились остальные.\n\nКогда дорожка стала свободной, сосед поблагодарил школьников. Он сказал, что больше всего его порадовало не то, что проблема была решена, а то, что ребята не остались равнодушными. Школьники поняли: даже небольшая помощь может многое значить для другого человека.",
+        "prompt": "Напиши сочинение-рассуждение на тему: «Почему важно не оставаться равнодушным к чужим проблемам?». Сформулируй тезис, приведи два примера из предложенного текста и поясни каждый, затем сделай вывод. Не пересказывай весь текст. Минимальный объём — 70 слов."
+    }
+}
+writing_sessions = {}
+
+def writing_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Сжатое изложение", callback_data="writingtask:summary")],
+        [InlineKeyboardButton(text="✍️ Сочинение-рассуждение", callback_data="writingtask:essay")],
+        [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")]
+    ])
+
 @dp.callback_query(F.data == "writing")
 async def writing(call: CallbackQuery):
-    await call.message.edit_text("📝 <b>Изложение и сочинение</b>\n\n"
-        "В разделе обучения есть пошаговые памятки по сжатому изложению и сочинению-рассуждению. "
-        "Используй памятки из обучения как план работы и самостоятельно проверь структуру, логику и грамотность текста.",
-        reply_markup=back_kb())
+    await call.message.edit_text(
+        "📝 <b>Изложение и сочинение</b>\n\n"
+        "Выбери работу. Я дам исходный текст и конкретное задание. После написания отправь работу сюда — бот проверит объём и основные элементы структуры.",
+        reply_markup=writing_kb())
     await call.answer()
+
+@dp.callback_query(F.data.startswith("writingtask:"))
+async def writing_task(call: CallbackQuery):
+    kind = call.data.split(":", 1)[1]
+    task = WRITING_TASKS[kind]
+    writing_sessions.pop(call.from_user.id, None)
+    await call.message.edit_text(
+        f"📚 <b>{task['title']}</b>\n\n<b>Исходный текст:</b>\n{task['source']}\n\n"
+        f"<b>Задание:</b>\n{task['prompt']}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📨 Отправить свою работу", callback_data=f"writingstart:{kind}")],
+            [InlineKeyboardButton(text="⬅️ К выбору работ", callback_data="writing")]
+        ]))
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("writingstart:"))
+async def writing_start(call: CallbackQuery):
+    kind = call.data.split(":", 1)[1]
+    writing_sessions[call.from_user.id] = kind
+    await call.message.edit_text(
+        "✍️ <b>Жду твою работу</b>\n\nОтправь готовый текст одним сообщением. "
+        "Пока ты не отправишь его, можешь вернуться к заданию кнопкой ниже.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Вернуться к заданию", callback_data=f"writingtask:{kind}")]
+        ]))
+    await call.answer()
+
+def review_writing(text, kind):
+    words = re.findall(r"\\b[А-Яа-яЁёA-Za-z0-9-]+\\b", text)
+    count = len(words)
+    paragraphs = [p for p in re.split(r"\\n\\s*\\n", text.strip()) if p.strip()]
+    checks = [
+        ("Объём", f"{count} слов — " + ("достаточно по минимуму 70." if count >= 70 else "меньше требуемых 70 слов.")),
+        ("Абзацы", f"Обнаружено абзацев: {len(paragraphs)}." + (" Хорошо, если каждый раскрывает отдельную мысль." if len(paragraphs) >= 3 else " Проверь деление текста на смысловые части.")),
+    ]
+    lower = text.lower()
+    if kind == "essay":
+        checks.append(("Структура", "Проверь вручную: есть ли тезис, два разных примера из исходного текста с пояснениями и вывод."))
+        if any(x in lower for x in ["потому что", "это показывает", "этот пример", "таким образом", "следовательно"]):
+            checks.append(("Связность", "Есть слова-связки. Убедись, что они действительно соединяют мысли."))
+        else:
+            checks.append(("Связность", "Добавь логические связки между тезисом, примерами и выводом, если их не хватает."))
+    else:
+        checks.append(("Микротемы", "Сверь работу с тремя частями исходного текста: умение слушать; поддержка в трудной ситуации; доверие в отношениях."))
+        checks.append(("Сжатие", "Проверь, убраны ли повторы и второстепенные детали, сохранены ли главная мысль и последовательность."))
+    checks.append(("Грамотность", "Автоматическая проверка орфографии и пунктуации не выполняется. Перечитай текст отдельно и проверь каждое сомнительное место."))
+    return count, "\\n".join(f"• <b>{name}:</b> {value}" for name, value in checks)
+
 
 @dp.callback_query(F.data == "stats")
 async def stats(call: CallbackQuery):
@@ -319,6 +388,20 @@ async def stats(call: CallbackQuery):
 @dp.message(F.text)
 async def text_message(message: Message):
     touch_user(message.from_user)
+    kind = writing_sessions.pop(message.from_user.id, None)
+    if kind:
+        count, review = review_writing(message.text, kind)
+        await message.answer(
+            f"🔎 <b>Предварительная проверка работы</b>\\n\\n"
+            f"Объём: <b>{count} слов</b>\\n\\n{review}\\n\\n"
+            "Это проверка по чек-листу, а не официальная оценка ОГЭ. "
+            "Я не могу надёжно определить все орфографические и пунктуационные ошибки без полноценного языкового проверяющего.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔁 Написать ещё раз", callback_data=f"writingtask:{kind}")],
+                [InlineKeyboardButton(text="📝 К другим работам", callback_data="writing")]
+            ])
+        )
+        return
     await message.answer(
         "Я работаю без ИИ и отвечаю через разделы меню. Выбери «Обучение», «Практика» или «Разбор заданий» 👇",
         reply_markup=main_kb()
