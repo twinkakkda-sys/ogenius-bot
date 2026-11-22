@@ -3,22 +3,11 @@ services:
     name: ogenius-bot
     runtime: python
     plan: free
-    buildCommand: >
-      pip install -r requirements.txt &&
-      curl --fail --silent --show-error -k "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt" -o /tmp/russian_trusted_root_ca_pem.crt &&
-      cat /tmp/russian_trusted_root_ca_pem.crt >> "$(python -m certifi)"
+    buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     healthCheckPath: /health
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: GIGACHAT_CREDENTIALS
-        sync: false
-      - key: GIGACHAT_SCOPE
-        value: GIGACHAT_API_PERS
-      - key: GIGACHAT_BASE_URL
-        value: https://api.giga.chat
-      - key: GIGACHAT_MODEL
-        value: GigaChat
       - key: PYTHON_VERSION
         value: 3.12.8
