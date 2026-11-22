@@ -3,7 +3,9 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+import json
+import random
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 from aiohttp import web
@@ -31,6 +33,18 @@ db.execute("""CREATE TABLE IF NOT EXISTS users (
     correct INTEGER NOT NULL DEFAULT 0, wrong INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 )""")
+db.commit()
+db.execute("""CREATE TABLE IF NOT EXISTS activity_days(user_id INTEGER NOT NULL, day TEXT NOT NULL, PRIMARY KEY(user_id,day))""")
+db.execute("""CREATE TABLE IF NOT EXISTS question_bank(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, task_no INTEGER NOT NULL, category TEXT NOT NULL,
+ question TEXT NOT NULL, options_json TEXT NOT NULL, correct_option INTEGER NOT NULL,
+ explanation TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'Авторская тренировка',
+ source_url TEXT, UNIQUE(task_no,question))""")
+db.execute("""CREATE TABLE IF NOT EXISTS mistakes(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, task_no INTEGER NOT NULL,
+ question TEXT NOT NULL, options_json TEXT NOT NULL, correct_option INTEGER NOT NULL,
+ explanation TEXT NOT NULL, created_at TEXT NOT NULL, review_after TEXT NOT NULL,
+ reminded_at TEXT, resolved INTEGER NOT NULL DEFAULT 0)""")
 db.commit()
 
 TASKS = {
@@ -190,12 +204,49 @@ TASK_PRACTICE = {
 {"q":"Какая структура лучше подходит для сочинения-рассуждения?","opts":["Тезис — два примера с пояснениями — вывод","Только пересказ текста","Список цитат без объяснений"],"a":0,"why":"Сочинение строится вокруг тезиса. Два точных примера подтверждают его, пояснения раскрывают связь, а вывод завершает рассуждение."}]
 }
 
+# Переносим имеющиеся тренировочные вопросы в постоянную БД.
+# Они явно помечены как авторские, не как задания ФИПИ.
+for number, items in TASK_PRACTICE.items():
+    for item in items:
+        db.execute("""INSERT OR IGNORE INTO question_bank
+        (task_no,category,question,options_json,correct_option,explanation,source)
+        VALUES(?,?,?,?,?,?,?)""",
+        (number,"Основная тема",item["q"],json.dumps(item["opts"],ensure_ascii=False),
+         item["a"],item["why"],"Авторская тренировка OGENIUS"))
+db.commit()
+
+def mark_activity(user_id):
+    day=datetime.now(timezone.utc).date().isoformat()
+    db.execute("INSERT OR IGNORE INTO activity_days(user_id,day) VALUES(?,?)",(user_id,day))
+    db.commit()
+
+def streak_for(user_id):
+    days={r[0] for r in db.execute(
+        "SELECT day FROM activity_days WHERE user_id=? ORDER BY day DESC LIMIT 400",(user_id,)).fetchall()}
+    today=datetime.now(timezone.utc).date()
+    if today.isoformat() not in days: today-=timedelta(days=1)
+    count=0
+    while today.isoformat() in days:
+        count+=1
+        today-=timedelta(days=1)
+    return count
+
+def remember_mistake(user_id, number, q):
+    now=datetime.now(timezone.utc)
+    db.execute("""INSERT INTO mistakes
+    (user_id,task_no,question,options_json,correct_option,explanation,created_at,review_after)
+    VALUES(?,?,?,?,?,?,?,?)""",
+    (user_id,number,q["q"],json.dumps(q["opts"],ensure_ascii=False),q["a"],q["why"],
+     now.isoformat(),(now+timedelta(days=2)).isoformat()))
+    db.commit()
+
 def touch_user(user):
     db.execute("""INSERT INTO users(user_id, username, first_name, created_at)
         VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
         username=excluded.username, first_name=excluded.first_name""",
         (user.id, user.username, user.first_name, datetime.now(timezone.utc).isoformat()))
     db.commit()
+    mark_activity(user.id)
 
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -204,6 +255,7 @@ def main_kb():
         [InlineKeyboardButton(text="🧩 Разбор заданий", callback_data="tasks")],
         [InlineKeyboardButton(text="📝 Изложение и сочинение", callback_data="writing"),
          InlineKeyboardButton(text="📊 Мой прогресс", callback_data="stats")],
+        [InlineKeyboardButton(text="🧠 Банк ошибок", callback_data="mistakes")],
         [InlineKeyboardButton(text="🔗 Материалы ФИПИ", url="https://fipi.ru/oge/demoversii-specifikacii-kodifikatory")]
     ])
 
@@ -330,6 +382,7 @@ async def task(call: CallbackQuery):
         "После разбора нажми «Решить» — будут тренировочные задания с ответами и подробными объяснениями.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✍️ Решить задания", callback_data=f"taskquiz:{n}:0")],
+            [InlineKeyboardButton(text="📚 Тренировка из базы", callback_data=f"bankstart:{n}")],
             [InlineKeyboardButton(text="⬅️ К списку заданий", callback_data="tasks")],
             [InlineKeyboardButton(text="🏠 В меню", callback_data="home")]
         ])
@@ -364,6 +417,8 @@ async def task_answer(call: CallbackQuery):
         (int(correct), int(not correct), call.from_user.id)
     )
     db.commit()
+    mark_activity(call.from_user.id)
+    if not correct: remember_mistake(call.from_user.id, task_no, q)
     result = "✅ Верно!" if correct else "❌ Не совсем. Разберём ошибку."
     text = (
         f"{result}\n\n"
@@ -384,6 +439,136 @@ async def task_answer(call: CallbackQuery):
         ])
     await call.message.edit_text(text, reply_markup=keyboard)
     await call.answer("Ответ сохранён")
+
+@dp.callback_query(F.data.startswith("bankstart:"))
+async def bank_start(call: CallbackQuery):
+    number=int(call.data.split(":")[1])
+    rows=db.execute("""SELECT id,question,options_json,correct_option,explanation,source
+      FROM question_bank WHERE task_no=? ORDER BY RANDOM() LIMIT 10""",(number,)).fetchall()
+    if not rows:
+        await call.answer("Вопросов этого номера пока нет в базе.",show_alert=True); return
+    sid=f"{call.from_user.id}_{call.message.message_id}"
+    bank_sessions[sid]={"uid":call.from_user.id,"number":number,"rows":rows,"index":0,"score":0}
+    await show_bank_question(call,sid)
+    await call.answer()
+
+bank_sessions={}
+async def show_bank_question(call,sid):
+    s=bank_sessions[sid]; i=s["index"]
+    _,question,opts,_,_,source=s["rows"][i]
+    options=json.loads(opts)
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text=f"{j+1}. {v}",callback_data=f"bankans:{sid}:{j}")]
+      for j,v in enumerate(options)
+    ]+[[InlineKeyboardButton(text="⏹ Завершить",callback_data="bankstop")]])
+    await call.message.edit_text(
+      f"📚 <b>База · задание №{s['number']}</b>\nВопрос {i+1} из {len(s['rows'])}\n"
+      f"<i>Источник: {source}</i>\n\n{question}",reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("bankans:"))
+async def bank_answer(call: CallbackQuery):
+    _,sid,raw=call.data.split(":"); option=int(raw)
+    s=bank_sessions.get(sid)
+    if not s or s["uid"]!=call.from_user.id:
+        await call.answer("Тренировка уже завершена.",show_alert=True); return
+    i=s["index"]
+    _,question,opts,correct,explanation,source=s["rows"][i]
+    options=json.loads(opts); good=option==correct
+    db.execute("UPDATE users SET correct=correct+?,wrong=wrong+? WHERE user_id=?",
+      (int(good),int(not good),call.from_user.id)); db.commit()
+    mark_activity(call.from_user.id)
+    q={"q":question,"opts":options,"a":correct,"why":explanation}
+    if not good: remember_mistake(call.from_user.id,s["number"],q)
+    s["score"]+=int(good)
+    result="✅ Верно!" if good else "❌ Ошибка сохранена в банк повторения."
+    body=f"{result}\n\n<b>Ответ:</b> {correct+1}. {options[correct]}\n\n<b>Разбор:</b> {explanation}\n\n<i>Источник: {source}</i>"
+    s["index"]+=1
+    if s["index"]>=len(s["rows"]):
+      bank_sessions.pop(sid,None)
+      kb=InlineKeyboardMarkup(inline_keyboard=[
+       [InlineKeyboardButton(text="🧠 Банк ошибок",callback_data="mistakes")],
+       [InlineKeyboardButton(text="📊 Мой прогресс",callback_data="stats")],
+       [InlineKeyboardButton(text="🏠 В меню",callback_data="home")]])
+      body+=f"\n\n🏁 <b>Итог: {s['score']} из {len(s['rows'])}</b>"
+    else:
+      kb=InlineKeyboardMarkup(inline_keyboard=[
+       [InlineKeyboardButton(text="Следующий вопрос ➡️",callback_data=f"banknext:{sid}")],
+       [InlineKeyboardButton(text="⏹ Завершить",callback_data="bankstop")]])
+    await call.message.edit_text(body,reply_markup=kb); await call.answer()
+
+@dp.callback_query(F.data.startswith("banknext:"))
+async def bank_next(call: CallbackQuery):
+    sid=call.data.split(":",1)[1]; s=bank_sessions.get(sid)
+    if not s or s["uid"]!=call.from_user.id:
+      await call.answer("Тренировка завершена.",show_alert=True); return
+    await show_bank_question(call,sid); await call.answer()
+
+@dp.callback_query(F.data=="bankstop")
+async def bank_stop(call: CallbackQuery):
+    for sid,s in list(bank_sessions.items()):
+      if s["uid"]==call.from_user.id: bank_sessions.pop(sid,None)
+    await call.message.edit_text("Тренировка остановлена. Уже данные ответы сохранены.",reply_markup=back_kb())
+    await call.answer()
+
+@dp.callback_query(F.data=="mistakes")
+async def mistakes(call: CallbackQuery):
+    rows=db.execute("""SELECT id,task_no,question FROM mistakes
+      WHERE user_id=? AND resolved=0 ORDER BY created_at DESC LIMIT 12""",(call.from_user.id,)).fetchall()
+    if not rows:
+      await call.message.edit_text("🧠 <b>Банк ошибок</b>\n\nПока здесь пусто. Неправильные ответы из тренировок будут сохраняться автоматически.",reply_markup=back_kb())
+      await call.answer(); return
+    buttons=[]
+    for mid,num,q in rows:
+      label=q if len(q)<40 else q[:37]+"..."
+      buttons.append([InlineKeyboardButton(text=f"№{num} · {label}",callback_data=f"mistakeopen:{mid}")])
+    buttons.append([InlineKeyboardButton(text="⬅️ В меню",callback_data="home")])
+    await call.message.edit_text(f"🧠 <b>Банк ошибок</b>\nНужно повторить: {len(rows)}",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("mistakeopen:"))
+async def mistake_open(call: CallbackQuery):
+    mid=int(call.data.split(":")[1])
+    row=db.execute("SELECT task_no,question,options_json,correct_option,explanation FROM mistakes WHERE id=? AND user_id=? AND resolved=0",(mid,call.from_user.id)).fetchone()
+    if not row:
+      await call.answer("Ошибка уже закрыта.",show_alert=True); return
+    num,q,opts,correct,why=row; options=json.loads(opts)
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text=f"{i+1}. {v}",callback_data=f"mistakeans:{mid}:{i}")]
+      for i,v in enumerate(options)
+    ]+[[InlineKeyboardButton(text="⬅️ К ошибкам",callback_data="mistakes")]])
+    await call.message.edit_text(f"🔁 <b>Повторение · №{num}</b>\n\n{q}",reply_markup=kb); await call.answer()
+
+@dp.callback_query(F.data.startswith("mistakeans:"))
+async def mistake_answer(call: CallbackQuery):
+    _,raw,choice=call.data.split(":"); mid=int(raw); choice=int(choice)
+    row=db.execute("SELECT correct_option,explanation FROM mistakes WHERE id=? AND user_id=? AND resolved=0",(mid,call.from_user.id)).fetchone()
+    if not row:
+      await call.answer("Ошибка уже закрыта.",show_alert=True); return
+    correct,why=row
+    if choice==correct:
+      db.execute("UPDATE mistakes SET resolved=1 WHERE id=?",(mid,)); msg="✅ Верно! Ошибка закрыта."
+    else:
+      db.execute("UPDATE mistakes SET review_after=?,reminded_at=NULL WHERE id=?",
+        ((datetime.now(timezone.utc)+timedelta(days=2)).isoformat(),mid)); msg="❌ Пока не получилось. Повторим ещё через 2 дня."
+    db.commit()
+    await call.message.edit_text(f"{msg}\n\n<b>Разбор:</b> {why}",reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text="🧠 К банку ошибок",callback_data="mistakes")],
+      [InlineKeyboardButton(text="🏠 В меню",callback_data="home")]]))
+    await call.answer()
+
+async def review_reminders():
+    while True:
+      now=datetime.now(timezone.utc).isoformat()
+      rows=db.execute("""SELECT id,user_id,task_no,question FROM mistakes
+        WHERE resolved=0 AND reminded_at IS NULL AND review_after<=? LIMIT 30""",(now,)).fetchall()
+      for mid,uid,num,q in rows:
+        try:
+          await bot.send_message(uid,f"⏰ <b>Пора повторить!</b> Ты ошибся в задании №{num}.\n\n{q}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+              [InlineKeyboardButton(text="🔁 Повторить",callback_data=f"mistakeopen:{mid}")]]))
+          db.execute("UPDATE mistakes SET reminded_at=? WHERE id=?",(now,mid)); db.commit()
+        except Exception as exc: log.warning("Reminder failed for %s: %s",uid,exc)
+      await asyncio.sleep(300)
 
 @dp.callback_query(F.data == "practice")
 async def practice(call: CallbackQuery):
@@ -409,6 +594,8 @@ async def answer(call: CallbackQuery):
     db.execute("UPDATE users SET correct=correct+?, wrong=wrong+? WHERE user_id=?",
                (int(good),int(not good),call.from_user.id))
     db.commit()
+    mark_activity(call.from_user.id)
+    if not good: remember_mistake(call.from_user.id, 0, q)
     explanation=f"{col}\n\n<b>Правильный ответ:</b> {q['a']+1}. {q['opts'][q['a']]}\n\n<b>Разбор:</b> {q['why']}"
     if idx+1<len(QUIZ):
         kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Следующий вопрос ➡️", callback_data=f"quiz:{idx+1}")],[InlineKeyboardButton(text="В меню", callback_data="home")]])
@@ -497,9 +684,13 @@ def review_writing(text, kind):
 @dp.callback_query(F.data == "stats")
 async def stats(call: CallbackQuery):
     row=db.execute("SELECT correct,wrong FROM users WHERE user_id=?",(call.from_user.id,)).fetchone() or (0,0)
-    total=row[0]+row[1]
-    pct=round(row[0]/total*100) if total else 0
-    await call.message.edit_text(f"📊 <b>Твой прогресс</b>\n\n✅ Верных ответов: {row[0]}\n❌ Ошибок: {row[1]}\n🎯 Точность: {pct}%\n\nПродолжай тренироваться — статистика обновляется после каждого ответа.", reply_markup=back_kb())
+    total=row[0]+row[1]; pct=round(row[0]/total*100) if total else 0
+    streak=streak_for(call.from_user.id)
+    pending=db.execute("SELECT COUNT(*) FROM mistakes WHERE user_id=? AND resolved=0",(call.from_user.id,)).fetchone()[0]
+    await call.message.edit_text(
+      f"📊 <b>Твой прогресс</b>\n\n✅ Верных ответов: {row[0]}\n❌ Ошибок: {row[1]}\n🎯 Точность: {pct}%"
+      f"\n🔥 Серия занятий: <b>{streak} дн.</b>\n🧠 Ошибок на повторение: <b>{pending}</b>",
+      reply_markup=back_kb())
     await call.answer()
 
 @dp.message(F.text)
@@ -540,11 +731,13 @@ async def run_web():
 
 async def main():
     runner=await run_web()
+    reminder_task=asyncio.create_task(review_reminders())
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         log.info("OGENIUS bot polling started")
         await dp.start_polling(bot)
     finally:
+        reminder_task.cancel()
         await runner.cleanup()
         await bot.session.close()
         db.close()
