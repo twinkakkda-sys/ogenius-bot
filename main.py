@@ -2,11 +2,7 @@ import asyncio
 import logging
 import os
 import re
-import html
 import sqlite3
-import uuid
-import ssl
-import certifi
 from datetime import datetime, timezone
 
 import aiohttp
@@ -21,12 +17,6 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ogenius")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GIGACHAT_CREDENTIALS = os.getenv("GIGACHAT_CREDENTIALS", "").strip()
-GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS").strip()
-GIGACHAT_BASE_URL = os.getenv("GIGACHAT_BASE_URL", "https://api.giga.chat").rstrip("/")
-GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat")
-_gigachat_token = None
-_gigachat_token_expires = 0
 PORT = int(os.getenv("PORT", "10000"))
 DB_PATH = os.getenv("DB_PATH", "ogenius.sqlite3")
 
@@ -127,8 +117,7 @@ def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📚 Обучение", callback_data="learn"),
          InlineKeyboardButton(text="✍️ Практика", callback_data="practice")],
-        [InlineKeyboardButton(text="🧩 Разбор заданий", callback_data="tasks"),
-         InlineKeyboardButton(text="🤖 ИИ-репетитор", callback_data="tutor")],
+        [InlineKeyboardButton(text="🧩 Разбор заданий", callback_data="tasks")],
         [InlineKeyboardButton(text="📝 Изложение и сочинение", callback_data="writing"),
          InlineKeyboardButton(text="📊 Мой прогресс", callback_data="stats")],
         [InlineKeyboardButton(text="🔗 Материалы ФИПИ", url="https://fipi.ru/oge/demoversii-specifikacii-kodifikatory")]
@@ -168,13 +157,12 @@ async def start(message: Message):
     await message.answer(
         f"Привет, {message.from_user.first_name or 'ученик'}! 👋\n\n"
         "<b>OGENIUS</b> — твой помощник в подготовке к ОГЭ по русскому языку.\n\n"
-        "Здесь можно изучать правила, решать тренировочные задания, разбирать ошибки и задавать вопросы репетитору.\n\n"
+        "Здесь можно изучать правила, решать тренировочные задания, разбирать ошибки и следить за прогрессом.\n\n"
         "Выбирай раздел 👇", reply_markup=main_kb())
 
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
-    await message.answer("Используй кнопки меню. Чтобы вернуться к началу, отправь /start.\n"
-                         "Для ИИ-репетитора отправь вопрос обычным сообщением после нажатия кнопки «ИИ-репетитор».")
+    await message.answer("Используй кнопки меню. Чтобы вернуться к началу, отправь /start.")
 
 @dp.callback_query(F.data == "home")
 async def home(call: CallbackQuery):
@@ -205,7 +193,7 @@ async def task(call: CallbackQuery):
     title,desc=TASKS[n]
     await call.message.edit_text(f"🧩 <b>Задание №{n}: {title}</b>\n\n{desc}\n\n"
         "💡 <b>Как разбирать:</b> сначала внимательно прочитай условие, затем выдели ключевые слова, выполни нужное действие и только после этого записывай ответ. "
-        "Если пришлёшь конкретное условие или фото задания, репетитор поможет разобрать его по шагам.",
+        "Разбирай условие по шагам и сверяй каждый этап с правилом из конспекта.",
         reply_markup=back_kb())
     await call.answer()
 
@@ -245,7 +233,7 @@ async def answer(call: CallbackQuery):
 async def writing(call: CallbackQuery):
     await call.message.edit_text("📝 <b>Изложение и сочинение</b>\n\n"
         "В разделе обучения есть пошаговые памятки по сжатому изложению и сочинению-рассуждению. "
-        "Можешь прислать свой текст следующим сообщением — ИИ-репетитор проверит его, если подключён ИИ-ключ.",
+        "Используй памятки из обучения как план работы и самостоятельно проверь структуру, логику и грамотность текста.",
         reply_markup=back_kb())
     await call.answer()
 
@@ -257,75 +245,13 @@ async def stats(call: CallbackQuery):
     await call.message.edit_text(f"📊 <b>Твой прогресс</b>\n\n✅ Верных ответов: {row[0]}\n❌ Ошибок: {row[1]}\n🎯 Точность: {pct}%\n\nПродолжай тренироваться — статистика обновляется после каждого ответа.", reply_markup=back_kb())
     await call.answer()
 
-@dp.callback_query(F.data == "tutor")
-async def tutor(call: CallbackQuery):
-    await call.message.edit_text("🤖 <b>ИИ-репетитор OGENIUS</b>\n\nНапиши вопрос по русскому языку, пришли условие задания или свой вариант сочинения. Я объясню решение по шагам.\n\n"
-        + ("ИИ подключён через GigaChat. Можешь задавать вопрос сообщением." if GIGACHAT_CREDENTIALS else "⚠️ ИИ пока не подключён: добавь GIGACHAT_CREDENTIALS в Render → Environment. Пока доступны уроки и тренировки."),
-        reply_markup=back_kb())
-    await call.answer()
-
-async def get_gigachat_token(session: aiohttp.ClientSession, ssl_context: ssl.SSLContext) -> str:
-    global _gigachat_token, _gigachat_token_expires
-    now = datetime.now(timezone.utc).timestamp()
-    if _gigachat_token and now < _gigachat_token_expires - 60:
-        return _gigachat_token
-
-    token_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-    headers = {
-        "Authorization": f"Basic {GIGACHAT_CREDENTIALS}",
-        "RqUID": str(uuid.uuid4()),
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-    }
-    async with session.post(token_url, headers=headers, data={"scope": GIGACHAT_SCOPE}, ssl=ssl_context) as resp:
-        data = await resp.json(content_type=None)
-        if resp.status >= 400:
-            log.error("GigaChat OAuth error %s: %s", resp.status, data)
-            raise RuntimeError(f"GigaChat authorization failed ({resp.status})")
-        _gigachat_token = data["access_token"]
-        _gigachat_token_expires = data.get("expires_at", now + 1800)
-        return _gigachat_token
-
-
-async def ask_ai(text: str) -> str:
-    system = ("Ты — доброжелательный и точный репетитор по русскому языку для подготовки к ОГЭ. "
-              "Отвечай на русском. Объясняй пошагово: 1) что требуется, 2) правило, 3) ход решения, "
-              "4) ответ, 5) почему другие варианты неверны (если есть). Не выдумывай критерии ФИПИ. "
-              "Если просят проверить сочинение или изложение, оцени структуру, аргументацию, логику, грамотность и объём; "
-              "отделяй предварительную учебную оценку от официальной оценки эксперта. Если условие неполное — попроси его прислать.")
-    timeout=aiohttp.ClientTimeout(total=75)
-    ssl_context = ssl.create_default_context(cafile=certifi.where())
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        token = await get_gigachat_token(session, ssl_context)
-        headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"}
-        payload={"model":GIGACHAT_MODEL,"messages":[{"role":"system","content":system},{"role":"user","content":text}],"temperature":0.3}
-        async with session.post(f"{GIGACHAT_BASE_URL}/v1/chat/completions",headers=headers,json=payload,ssl=ssl_context) as resp:
-            data=await resp.json(content_type=None)
-            if resp.status>=400:
-                log.error("GigaChat API error %s: %s", resp.status, data)
-                return f"Не удалось получить ответ GigaChat (ошибка {resp.status}). Проверь ключ, доступ и модель в Render."
-            return data["choices"][0]["message"]["content"].strip()
-
 @dp.message(F.text)
 async def text_message(message: Message):
     touch_user(message.from_user)
-    if not GIGACHAT_CREDENTIALS:
-        await message.answer("Я получил сообщение! 🤝\n\nЧтобы включить ИИ-репетитора, добавьте GIGACHAT_CREDENTIALS в Render → Environment. "
-                             "А пока загляни в «Обучение» или «Практика».", reply_markup=main_kb())
-        return
-    status=await message.answer("🤔 Разбираю вопрос…")
-    try:
-        result=await ask_ai(message.text)
-        # Telegram message limit is 4096 characters.
-        for start in range(0,len(result),3900):
-            part=html.escape(result[start:start+3900])
-            if start==0:
-                await status.edit_text(part)
-            else:
-                await message.answer(part)
-    except Exception:
-        log.exception("AI request failed")
-        await status.edit_text("Произошла ошибка при обращении к ИИ. Попробуй ещё раз позже.")
+    await message.answer(
+        "Я работаю без ИИ и отвечаю через разделы меню. Выбери «Обучение», «Практика» или «Разбор заданий» 👇",
+        reply_markup=main_kb()
+    )
 
 async def health(request):
     return web.json_response({"status":"ok","service":"OGENIUS","time":datetime.now(timezone.utc).isoformat()})
