@@ -345,6 +345,9 @@ async def lesson_answer(call: CallbackQuery):
         (int(correct), int(not correct), call.from_user.id)
     )
     db.commit()
+    mark_activity(call.from_user.id)
+    if not correct:
+        remember_mistake(call.from_user.id, 0, q)
     result = "✅ Верно!" if correct else "❌ Неверно."
     text = (
         f"{result}\n\n<b>Правильный ответ:</b> "
