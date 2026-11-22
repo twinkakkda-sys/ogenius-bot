@@ -9,9 +9,13 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: OPENAI_API_KEY
+      - key: GIGACHAT_CREDENTIALS
         sync: false
-      - key: AI_MODEL
-        value: gpt-4o-mini
+      - key: GIGACHAT_SCOPE
+        value: GIGACHAT_API_PERS
+      - key: GIGACHAT_BASE_URL
+        value: https://api.giga.chat
+      - key: GIGACHAT_MODEL
+        value: GigaChat
       - key: PYTHON_VERSION
         value: 3.12.8
