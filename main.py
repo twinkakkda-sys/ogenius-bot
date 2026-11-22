@@ -572,10 +572,85 @@ async def review_reminders():
 
 @dp.callback_query(F.data == "practice")
 async def practice(call: CallbackQuery):
-    await call.message.edit_text("✍️ <b>Практика</b>\nНебольшая тренировка из 6 вопросов. После ответа покажу правильный вариант и объяснение.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Начать тренировку", callback_data="quiz:0")],
-        [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")]
-    ]))
+    await call.message.edit_text(
+        "✍️ <b>Практика</b>\n\nВыбери размер смешанной тренировки. Вопросы берутся из локальной базы OGENIUS, после каждого ответа будет разбор. Источник каждого вопроса показывается отдельно.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡ 10 вопросов",callback_data="bankmix:10")],
+            [InlineKeyboardButton(text="🔥 20 вопросов",callback_data="bankmix:20")],
+            [InlineKeyboardButton(text="🧠 Банк ошибок",callback_data="mistakes")],
+            [InlineKeyboardButton(text="⬅️ В меню",callback_data="home")]
+        ]))
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("bankmix:"))
+async def bank_mix(call: CallbackQuery):
+    count=int(call.data.split(":")[1])
+    rows=db.execute("""SELECT id,task_no,category,question,options_json,correct_option,explanation,source
+      FROM question_bank ORDER BY RANDOM() LIMIT ?""",(count,)).fetchall()
+    if not rows:
+      await call.answer("База пока пуста.",show_alert=True); return
+    sid=f"{call.from_user.id}_{call.message.message_id}"
+    normalized=[]
+    for row in rows:
+      normalized.append({"id":row[0],"task_no":row[1],"category":row[2],"q":row[3],
+        "opts":json.loads(row[4]),"a":row[5],"why":row[6],"source":row[7]})
+    bank_sessions[sid]={"uid":call.from_user.id,"number":"смешанная","questions":normalized,"rows":rows,"index":0,"score":0}
+    q=normalized[0]
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text=f"{i+1}. {v}",callback_data=f"mixans:{sid}:0:{i}")]
+      for i,v in enumerate(q["opts"])
+    ]+[[InlineKeyboardButton(text="⏹ Завершить",callback_data="bankstop")]])
+    await call.message.edit_text(
+      f"✍️ <b>Смешанная тренировка</b>\nВопрос 1 из {len(normalized)} · №{q['task_no']}\n"
+      f"<i>Источник: {q['source']}</i>\n\n{q['q']}",reply_markup=kb)
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("mixans:"))
+async def mix_answer(call: CallbackQuery):
+    _,sid,raw_index,raw_option=call.data.split(":")
+    s=bank_sessions.get(sid)
+    if not s or s["uid"]!=call.from_user.id:
+      await call.answer("Тренировка завершена.",show_alert=True); return
+    index,option=int(raw_index),int(raw_option)
+    if index!=s["index"] or index>=len(s["questions"]):
+      await call.answer("Этот ответ уже принят.",show_alert=True); return
+    q=s["questions"][index]; good=option==q["a"]
+    db.execute("UPDATE users SET correct=correct+?,wrong=wrong+? WHERE user_id=?",
+      (int(good),int(not good),call.from_user.id)); db.commit()
+    mark_activity(call.from_user.id)
+    if not good: remember_mistake(call.from_user.id,q["task_no"],q)
+    s["score"]+=int(good); s["index"]+=1
+    body=("✅ Верно!" if good else "❌ Ошибка сохранена в банк повторения.")
+    body+=f"\n\n<b>Правильный ответ:</b> {q['a']+1}. {q['opts'][q['a']]}\n\n<b>Разбор:</b> {q['why']}"
+    if s["index"]>=len(s["questions"]):
+      score=s["score"]; total=len(s["questions"]); bank_sessions.pop(sid,None)
+      body+=f"\n\n🏁 <b>Итог: {score} из {total}</b>"
+      kb=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔁 Ещё тренировка",callback_data="practice")],
+        [InlineKeyboardButton(text="🧠 Банк ошибок",callback_data="mistakes")],
+        [InlineKeyboardButton(text="📊 Прогресс",callback_data="stats")]])
+    else:
+      ni=s["index"]; nq=s["questions"][ni]
+      body+=f"\n\nСледующий вопрос: №{nq['task_no']}."
+      kb=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Следующий вопрос ➡️",callback_data=f"mixnext:{sid}:{ni}")],
+        [InlineKeyboardButton(text="⏹ Завершить",callback_data="bankstop")]])
+    await call.message.edit_text(body,reply_markup=kb); await call.answer()
+
+@dp.callback_query(F.data.startswith("mixnext:"))
+async def mix_next(call: CallbackQuery):
+    _,sid,raw_index=call.data.split(":")
+    s=bank_sessions.get(sid)
+    if not s or s["uid"]!=call.from_user.id or int(raw_index)!=s["index"]:
+      await call.answer("Тренировка завершена.",show_alert=True); return
+    q=s["questions"][s["index"]]
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text=f"{i+1}. {v}",callback_data=f"mixans:{sid}:{s['index']}:{i}")]
+      for i,v in enumerate(q["opts"])
+    ]+[[InlineKeyboardButton(text="⏹ Завершить",callback_data="bankstop")]])
+    await call.message.edit_text(
+      f"✍️ <b>Смешанная тренировка</b>\nВопрос {s['index']+1} из {len(s['questions'])} · №{q['task_no']}\n"
+      f"<i>Источник: {q['source']}</i>\n\n{q['q']}",reply_markup=kb)
     await call.answer()
 
 @dp.callback_query(F.data.startswith("quiz:"))
