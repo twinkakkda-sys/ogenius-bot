@@ -217,7 +217,7 @@ async def lesson_quiz(call: CallbackQuery):
         for i, option in enumerate(q["opts"])
     ] + [[InlineKeyboardButton(text="⬅️ К уроку", callback_data=f"lesson:{key}")]])
     await call.message.edit_text(
-        f"📝 <b>Проверка знаний · {LESSONS[key][0]}</b>\\nВопрос {index+1} из {len(questions)}\\n\\n{q['q']}",
+        f"📝 <b>Проверка знаний · {LESSONS[key][0]}</b>\nВопрос {index+1} из {len(questions)}\n\n{q['q']}",
         reply_markup=keyboard
     )
     await call.answer()
@@ -235,8 +235,8 @@ async def lesson_answer(call: CallbackQuery):
     db.commit()
     result = "✅ Верно!" if correct else "❌ Неверно."
     text = (
-        f"{result}\\n\\n<b>Правильный ответ:</b> "
-        f"{q['a']+1}. {q['opts'][q['a']]}\\n\\n"
+        f"{result}\n\n<b>Правильный ответ:</b> "
+        f"{q['a']+1}. {q['opts'][q['a']]}\n\n"
         f"<b>Объяснение:</b> {q['why']}"
     )
     if index + 1 < len(LESSON_QUIZZES[key]):
