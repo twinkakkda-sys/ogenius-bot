@@ -3,7 +3,10 @@ services:
     name: ogenius-bot
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: >
+      pip install -r requirements.txt &&
+      curl --fail --silent --show-error -k "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt" -o /tmp/russian_trusted_root_ca_pem.crt &&
+      cat /tmp/russian_trusted_root_ca_pem.crt >> "$(python -m certifi)"
     startCommand: python main.py
     healthCheckPath: /health
     envVars:
