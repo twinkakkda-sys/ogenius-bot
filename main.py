@@ -106,6 +106,30 @@ QUIZ = [
     {"q":"В каком варианте грамматическая основа указана верно: «Вечером быстро стемнело»?","opts":["вечером стемнело","быстро стемнело","стемнело","вечером быстро"],"a":2,"why":"«Стемнело» — главный член безличного предложения. Слова «вечером» и «быстро» — обстоятельства."}
 ]
 
+
+LESSON_QUIZZES = {
+    "orfo": [
+        {"q":"Выбери правильное написание: «Он ___ высокий, а низкий».","opts":["невысокий","не высокий","ни высокий"],"a":1,"why":"Есть противопоставление с союзом «а»: не высокий, а низкий. Поэтому НЕ пишется раздельно."},
+        {"q":"В каком варианте НЕ пишется слитно?","opts":["(не)навидеть ложь","(не) знал ответа","вовсе (не)интересный фильм"],"a":0,"why":"Слово «ненавидеть» не употребляется без НЕ, поэтому пишется слитно."}
+    ],
+    "n": [
+        {"q":"Выбери правильный вариант: «Задача уже реше..а».","opts":["решена","решённа","решённая"],"a":0,"why":"Это краткое страдательное причастие: задача решена. В кратких страдательных причастиях пишется одна Н."},
+        {"q":"В каком слове пишется НН?","opts":["ветре..ый","време..ый","ю..ый"],"a":1,"why":"В слове «временный» суффикс -ЕНН-, поэтому пишется НН."}
+    ],
+    "punct": [
+        {"q":"Где нужна запятая?","opts":["Закончив работу ученик ушёл.","Закончив работу, ученик ушёл.","Закончив, работу ученик ушёл."],"a":1,"why":"«Закончив работу» — деепричастный оборот в начале предложения. Он отделяется запятой."},
+        {"q":"В каком предложении слово является вводным?","opts":["Он говорил уверенно.","Кажется, дождь начинается.","Мне это кажется странным."],"a":1,"why":"В предложении «Кажется, дождь начинается» слово «кажется» выражает предположение и является вводным. В остальных вариантах это часть сказуемого или обстоятельственная характеристика."}
+    ],
+    "compress": [
+        {"q":"Как называется приём сжатия, когда ряд однородных слов заменяют одним общим понятием?","opts":["Исключение","Обобщение","Упрощение"],"a":1,"why":"Обобщение заменяет перечисление общим понятием: например, «яблоки, груши, сливы» — «фрукты»."},
+        {"q":"Что важно сохранить при сжатии исходного текста?","opts":["Все примеры и повторы","Только красивые выражения","Основную мысль и микротемы"],"a":2,"why":"При сжатии нужно сохранить главную мысль, все микротемы и их последовательность, убрав второстепенные детали."}
+    ],
+    "essay": [
+        {"q":"Что обязательно должно быть после тезиса в сочинении по тексту?","opts":["Два примера из текста с пояснениями","Большой пересказ всего текста","Только личное мнение"],"a":0,"why":"Нужно привести два точных примера из текста и пояснить, как каждый подтверждает тезис."},
+        {"q":"Для чего нужен вывод в сочинении?","opts":["Чтобы добавить новую тему","Чтобы подвести итог рассуждению","Чтобы повторить весь исходный текст"],"a":1,"why":"Вывод завершает рассуждение и возвращает читателя к основной мысли."}
+    ]
+}
+
 def touch_user(user):
     db.execute("""INSERT INTO users(user_id, username, first_name, created_at)
         VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
@@ -181,6 +205,53 @@ async def lesson(call: CallbackQuery):
     body = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", body, flags=re.S)
     await call.message.edit_text(f"📖 <b>{title}</b>\n\n{body}", reply_markup=back_kb())
     await call.answer()
+
+@dp.callback_query(F.data.startswith("lessonquiz:"))
+async def lesson_quiz(call: CallbackQuery):
+    _, key, index = call.data.split(":")
+    index = int(index)
+    questions = LESSON_QUIZZES[key]
+    q = questions[index]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{i+1}. {option}", callback_data=f"lessonanswer:{key}:{index}:{i}")]
+        for i, option in enumerate(q["opts"])
+    ] + [[InlineKeyboardButton(text="⬅️ К уроку", callback_data=f"lesson:{key}")]])
+    await call.message.edit_text(
+        f"📝 <b>Проверка знаний · {LESSONS[key][0]}</b>\\nВопрос {index+1} из {len(questions)}\\n\\n{q['q']}",
+        reply_markup=keyboard
+    )
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("lessonanswer:"))
+async def lesson_answer(call: CallbackQuery):
+    _, key, index, option = call.data.split(":")
+    index, option = int(index), int(option)
+    q = LESSON_QUIZZES[key][index]
+    correct = option == q["a"]
+    db.execute(
+        "UPDATE users SET correct=correct+?, wrong=wrong+? WHERE user_id=?",
+        (int(correct), int(not correct), call.from_user.id)
+    )
+    db.commit()
+    result = "✅ Верно!" if correct else "❌ Неверно."
+    text = (
+        f"{result}\\n\\n<b>Правильный ответ:</b> "
+        f"{q['a']+1}. {q['opts'][q['a']]}\\n\\n"
+        f"<b>Объяснение:</b> {q['why']}"
+    )
+    if index + 1 < len(LESSON_QUIZZES[key]):
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Следующий вопрос ➡️", callback_data=f"lessonquiz:{key}:{index+1}")],
+            [InlineKeyboardButton(text="⬅️ К уроку", callback_data=f"lesson:{key}")]
+        ])
+    else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Решить ещё раз", callback_data=f"lessonquiz:{key}:0")],
+            [InlineKeyboardButton(text="📖 Вернуться к уроку", callback_data=f"lesson:{key}")],
+            [InlineKeyboardButton(text="📊 Мой прогресс", callback_data="stats")]
+        ])
+    await call.message.edit_text(text, reply_markup=keyboard)
+    await call.answer("Ответ сохранён")
 
 @dp.callback_query(F.data == "tasks")
 async def tasks(call: CallbackQuery):
