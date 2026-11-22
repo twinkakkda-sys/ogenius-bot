@@ -184,7 +184,7 @@ async def learn(call: CallbackQuery):
 async def lesson(call: CallbackQuery):
     key=call.data.split(":",1)[1]
     title,body=LESSONS[key]
-    body = re.sub(r"\\*\\*(.*?)\\*\\*", r"<b>\\1</b>", body, flags=re.S)
+        body = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", body, flags=re.S)
     await call.message.edit_text(f"📖 <b>{title}</b>\n\n{body}", reply_markup=back_kb())
     await call.answer()
 
