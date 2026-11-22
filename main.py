@@ -356,9 +356,9 @@ async def writing_start(call: CallbackQuery):
     await call.answer()
 
 def review_writing(text, kind):
-    words = re.findall(r"\\b[А-Яа-яЁёA-Za-z0-9-]+\\b", text)
+    words = re.findall(r"\b[А-Яа-яЁёA-Za-z0-9-]+\b", text)
     count = len(words)
-    paragraphs = [p for p in re.split(r"\\n\\s*\\n", text.strip()) if p.strip()]
+    paragraphs = [p for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
     checks = [
         ("Объём", f"{count} слов — " + ("достаточно по минимуму 70." if count >= 70 else "меньше требуемых 70 слов.")),
         ("Абзацы", f"Обнаружено абзацев: {len(paragraphs)}." + (" Хорошо, если каждый раскрывает отдельную мысль." if len(paragraphs) >= 3 else " Проверь деление текста на смысловые части.")),
@@ -374,7 +374,7 @@ def review_writing(text, kind):
         checks.append(("Микротемы", "Сверь работу с тремя частями исходного текста: умение слушать; поддержка в трудной ситуации; доверие в отношениях."))
         checks.append(("Сжатие", "Проверь, убраны ли повторы и второстепенные детали, сохранены ли главная мысль и последовательность."))
     checks.append(("Грамотность", "Автоматическая проверка орфографии и пунктуации не выполняется. Перечитай текст отдельно и проверь каждое сомнительное место."))
-    return count, "\\n".join(f"• <b>{name}:</b> {value}" for name, value in checks)
+    return count, "\n".join(f"• <b>{name}:</b> {value}" for name, value in checks)
 
 
 @dp.callback_query(F.data == "stats")
@@ -392,8 +392,8 @@ async def text_message(message: Message):
     if kind:
         count, review = review_writing(message.text, kind)
         await message.answer(
-            f"🔎 <b>Предварительная проверка работы</b>\\n\\n"
-            f"Объём: <b>{count} слов</b>\\n\\n{review}\\n\\n"
+            f"🔎 <b>Предварительная проверка работы</b>\n\n"
+            f"Объём: <b>{count} слов</b>\n\n{review}\n\n"
             "Это проверка по чек-листу, а не официальная оценка ОГЭ. "
             "Я не могу надёжно определить все орфографические и пунктуационные ошибки без полноценного языкового проверяющего.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
