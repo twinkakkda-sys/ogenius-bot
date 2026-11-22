@@ -203,7 +203,7 @@ async def lesson(call: CallbackQuery):
     key=call.data.split(":",1)[1]
     title,body=LESSONS[key]
     body = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", body, flags=re.S)
-    await call.message.edit_text(f"📖 <b>{title}</b>\n\n{body}", reply_markup=back_kb())
+    await call.message.edit_text(f"📖 <b>{title}</b>\n\n{body}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📝 Решить", callback_data=f"lessonquiz:{key}:0")],[InlineKeyboardButton(text="⬅️ К темам обучения", callback_data="learn")]]))
     await call.answer()
 
 @dp.callback_query(F.data.startswith("lessonquiz:"))
