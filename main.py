@@ -4,6 +4,7 @@ import os
 import re
 import html
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 
 import aiohttp
@@ -18,9 +19,12 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ogenius")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
+GIGACHAT_CREDENTIALS = os.getenv("GIGACHAT_CREDENTIALS", "").strip()
+GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS").strip()
+GIGACHAT_BASE_URL = os.getenv("GIGACHAT_BASE_URL", "https://api.giga.chat").rstrip("/")
+GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat")
+_gigachat_token = None
+_gigachat_token_expires = 0
 PORT = int(os.getenv("PORT", "10000"))
 DB_PATH = os.getenv("DB_PATH", "ogenius.sqlite3")
 
@@ -254,9 +258,32 @@ async def stats(call: CallbackQuery):
 @dp.callback_query(F.data == "tutor")
 async def tutor(call: CallbackQuery):
     await call.message.edit_text("🤖 <b>ИИ-репетитор OGENIUS</b>\n\nНапиши вопрос по русскому языку, пришли условие задания или свой вариант сочинения. Я объясню решение по шагам.\n\n"
-        + ("ИИ подключён. Можешь задавать вопрос сообщением." if OPENAI_API_KEY else "⚠️ ИИ пока не подключён: для него нужно добавить OPENAI_API_KEY в Render → Environment. Пока доступны уроки и тренировки."),
+        + ("ИИ подключён через GigaChat. Можешь задавать вопрос сообщением." if GIGACHAT_CREDENTIALS else "⚠️ ИИ пока не подключён: добавь GIGACHAT_CREDENTIALS в Render → Environment. Пока доступны уроки и тренировки."),
         reply_markup=back_kb())
     await call.answer()
+
+async def get_gigachat_token(session: aiohttp.ClientSession) -> str:
+    global _gigachat_token, _gigachat_token_expires
+    now = datetime.now(timezone.utc).timestamp()
+    if _gigachat_token and now < _gigachat_token_expires - 60:
+        return _gigachat_token
+
+    token_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    headers = {
+        "Authorization": f"Basic {GIGACHAT_CREDENTIALS}",
+        "RqUID": str(uuid.uuid4()),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+    async with session.post(token_url, headers=headers, data={"scope": GIGACHAT_SCOPE}) as resp:
+        data = await resp.json(content_type=None)
+        if resp.status >= 400:
+            log.error("GigaChat OAuth error %s: %s", resp.status, data)
+            raise RuntimeError(f"GigaChat authorization failed ({resp.status})")
+        _gigachat_token = data["access_token"]
+        _gigachat_token_expires = data.get("expires_at", now + 1800)
+        return _gigachat_token
+
 
 async def ask_ai(text: str) -> str:
     system = ("Ты — доброжелательный и точный репетитор по русскому языку для подготовки к ОГЭ. "
@@ -264,22 +291,23 @@ async def ask_ai(text: str) -> str:
               "4) ответ, 5) почему другие варианты неверны (если есть). Не выдумывай критерии ФИПИ. "
               "Если просят проверить сочинение или изложение, оцени структуру, аргументацию, логику, грамотность и объём; "
               "отделяй предварительную учебную оценку от официальной оценки эксперта. Если условие неполное — попроси его прислать.")
-    headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}
-    payload={"model":AI_MODEL,"messages":[{"role":"system","content":system},{"role":"user","content":text}],"temperature":0.3}
     timeout=aiohttp.ClientTimeout(total=75)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(f"{AI_BASE_URL}/chat/completions",headers=headers,json=payload) as resp:
-            data=await resp.json()
+        token = await get_gigachat_token(session)
+        headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"}
+        payload={"model":GIGACHAT_MODEL,"messages":[{"role":"system","content":system},{"role":"user","content":text}],"temperature":0.3}
+        async with session.post(f"{GIGACHAT_BASE_URL}/v1/chat/completions",headers=headers,json=payload) as resp:
+            data=await resp.json(content_type=None)
             if resp.status>=400:
-                log.error("AI API error: %s", data)
-                return "Не удалось получить ответ ИИ. Проверьте настройки API-ключа и модели в Render."
+                log.error("GigaChat API error %s: %s", resp.status, data)
+                return f"Не удалось получить ответ GigaChat (ошибка {resp.status}). Проверь ключ, доступ и модель в Render."
             return data["choices"][0]["message"]["content"].strip()
 
 @dp.message(F.text)
 async def text_message(message: Message):
     touch_user(message.from_user)
-    if not OPENAI_API_KEY:
-        await message.answer("Я получил сообщение! 🤝\n\nЧтобы включить подробные ответы ИИ, добавьте OPENAI_API_KEY в Render → Environment. "
+    if not GIGACHAT_CREDENTIALS:
+        await message.answer("Я получил сообщение! 🤝\n\nЧтобы включить ИИ-репетитора, добавьте GIGACHAT_CREDENTIALS в Render → Environment. "
                              "А пока загляни в «Обучение» или «Практика».", reply_markup=main_kb())
         return
     status=await message.answer("🤔 Разбираю вопрос…")
