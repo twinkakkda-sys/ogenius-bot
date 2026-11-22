@@ -5,6 +5,8 @@ import re
 import html
 import sqlite3
 import uuid
+import ssl
+import certifi
 from datetime import datetime, timezone
 
 import aiohttp
@@ -262,7 +264,7 @@ async def tutor(call: CallbackQuery):
         reply_markup=back_kb())
     await call.answer()
 
-async def get_gigachat_token(session: aiohttp.ClientSession) -> str:
+async def get_gigachat_token(session: aiohttp.ClientSession, ssl_context: ssl.SSLContext) -> str:
     global _gigachat_token, _gigachat_token_expires
     now = datetime.now(timezone.utc).timestamp()
     if _gigachat_token and now < _gigachat_token_expires - 60:
@@ -275,7 +277,7 @@ async def get_gigachat_token(session: aiohttp.ClientSession) -> str:
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
     }
-    async with session.post(token_url, headers=headers, data={"scope": GIGACHAT_SCOPE}) as resp:
+    async with session.post(token_url, headers=headers, data={"scope": GIGACHAT_SCOPE}, ssl=ssl_context) as resp:
         data = await resp.json(content_type=None)
         if resp.status >= 400:
             log.error("GigaChat OAuth error %s: %s", resp.status, data)
@@ -292,11 +294,12 @@ async def ask_ai(text: str) -> str:
               "Если просят проверить сочинение или изложение, оцени структуру, аргументацию, логику, грамотность и объём; "
               "отделяй предварительную учебную оценку от официальной оценки эксперта. Если условие неполное — попроси его прислать.")
     timeout=aiohttp.ClientTimeout(total=75)
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        token = await get_gigachat_token(session)
+        token = await get_gigachat_token(session, ssl_context)
         headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"}
         payload={"model":GIGACHAT_MODEL,"messages":[{"role":"system","content":system},{"role":"user","content":text}],"temperature":0.3}
-        async with session.post(f"{GIGACHAT_BASE_URL}/v1/chat/completions",headers=headers,json=payload) as resp:
+        async with session.post(f"{GIGACHAT_BASE_URL}/v1/chat/completions",headers=headers,json=payload,ssl=ssl_context) as resp:
             data=await resp.json(content_type=None)
             if resp.status>=400:
                 log.error("GigaChat API error %s: %s", resp.status, data)
