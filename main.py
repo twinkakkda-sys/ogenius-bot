@@ -5,6 +5,7 @@ import re
 import sqlite3
 import json
 import random
+import html
 from datetime import datetime, timezone, timedelta
 
 import aiohttp
@@ -21,6 +22,10 @@ log = logging.getLogger("ogenius")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 DB_PATH = os.getenv("DB_PATH", "ogenius.sqlite3")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+ai_sessions = {}
+ai_mode = set()
 
 if not BOT_TOKEN:
     raise RuntimeError("Не задан BOT_TOKEN в переменных окружения Render")
@@ -353,6 +358,7 @@ def main_kb():
         [InlineKeyboardButton(text="📝 Изложение и сочинение", callback_data="writing"),
          InlineKeyboardButton(text="📊 Мой прогресс", callback_data="stats")],
         [InlineKeyboardButton(text="🧠 Банк ошибок", callback_data="mistakes")],
+        [InlineKeyboardButton(text="🤖 ИИ-помощник", callback_data="ai_start")],
         [InlineKeyboardButton(text="🔗 Материалы ФИПИ", url="https://fipi.ru/oge/demoversii-specifikacii-kodifikatory")]
     ])
 
@@ -400,6 +406,7 @@ async def help_cmd(message: Message):
 
 @dp.callback_query(F.data == "home")
 async def home(call: CallbackQuery):
+    ai_mode.discard(call.from_user.id)
     await call.message.edit_text("🏠 <b>Главное меню OGENIUS</b>\nВыбирай, чем займёмся:", reply_markup=main_kb())
     await call.answer()
 
@@ -779,6 +786,78 @@ async def answer(call: CallbackQuery):
     await call.message.edit_text(explanation, reply_markup=kb)
     await call.answer("Ответ принят")
 
+
+@dp.callback_query(F.data == "ai_start")
+async def ai_start(call: CallbackQuery):
+    if not GEMINI_API_KEY:
+        await call.message.edit_text(
+            "🤖 <b>ИИ-помощник пока не настроен</b>\n\n"
+            "Добавь API-ключ Gemini в Render → Environment под именем <code>GEMINI_API_KEY</code>, "
+            "затем перезапусти сервис.",
+            reply_markup=back_kb())
+        await call.answer()
+        return
+    ai_mode.add(call.from_user.id)
+    ai_sessions[call.from_user.id] = []
+    await call.message.edit_text(
+        "🤖 <b>ИИ-помощник OGENIUS включён</b>\n\n"
+        "Задай вопрос по русскому языку или ОГЭ: объясню правило, помогу разобрать задание "
+        "и покажу решение по шагам. Можно отправлять текстовые вопросы.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧹 Начать диалог заново", callback_data="ai_reset")],
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")]
+        ]))
+    await call.answer()
+
+@dp.callback_query(F.data == "ai_reset")
+async def ai_reset(call: CallbackQuery):
+    ai_mode.add(call.from_user.id)
+    ai_sessions[call.from_user.id] = []
+    await call.message.edit_text(
+        "🧹 <b>Начали новый диалог!</b>\n\nНапиши свой вопрос по русскому языку или ОГЭ.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")]
+        ]))
+    await call.answer()
+
+async def ask_gemini(user_id, user_text):
+    history = ai_sessions.setdefault(user_id, [])
+    history.append({"role": "user", "parts": [{"text": user_text[:4000]}]})
+    payload = {
+        "systemInstruction": {"parts": [{"text":
+            "Ты — доброжелательный и точный ИИ-помощник OGENIUS для подготовки школьников к ОГЭ по русскому языку. "
+            "Отвечай на русском, простыми словами и по существу. Объясняй ход решения пошагово, приводи короткие примеры. "
+            "Если ученик прислал задание, сначала помоги понять условие, затем разбери решение и объясни почему. "
+            "Не выдумывай правила, критерии ФИПИ и ответы. Если данных недостаточно или не уверен — честно скажи об этом. "
+            "Не выдавай себя за официальный ФИПИ и не обещай официальную оценку. "
+            "Если вопрос не связан с русским языком или учёбой, вежливо верни разговор к подготовке к ОГЭ."
+        }]},
+        "contents": history[-10:],
+        "generationConfig": {"temperature": 0.35, "maxOutputTokens": 900}
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    timeout = aiohttp.ClientTimeout(total=45)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, headers={
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        }, json=payload) as response:
+            data = await response.json(content_type=None)
+            if response.status != 200:
+                log.warning("Gemini API error %s: %s", response.status, str(data)[:1000])
+                if response.status == 429:
+                    raise RuntimeError("Сейчас слишком много запросов. Подожди немного и попробуй ещё раз.")
+                if response.status in (401, 403):
+                    raise RuntimeError("Gemini не принял API-ключ. Проверь переменную GEMINI_API_KEY в Render.")
+                raise RuntimeError("Gemini временно не отвечает. Попробуй ещё раз чуть позже.")
+    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    answer = "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
+    if not answer:
+        raise RuntimeError("Gemini вернул пустой ответ. Попробуй переформулировать вопрос.")
+    history.append({"role": "model", "parts": [{"text": answer}]})
+    ai_sessions[user_id] = history[-10:]
+    return answer
+
 WRITING_TASKS = {
     "summary": {
         "title": "Сжатое изложение",
@@ -885,8 +964,28 @@ async def text_message(message: Message):
             ])
         )
         return
+    if message.from_user.id in ai_mode:
+        if not GEMINI_API_KEY:
+            ai_mode.discard(message.from_user.id)
+            await message.answer("ИИ-помощник не настроен: добавь GEMINI_API_KEY в Render → Environment.")
+            return
+        wait = await message.answer("🤖 Думаю над ответом…")
+        try:
+            answer = await ask_gemini(message.from_user.id, message.text)
+            safe_answer = html.escape(answer)
+            await wait.edit_text("🤖 <b>Ответ Gemini:</b>\n\n" + safe_answer[:3900], reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🧹 Новый диалог", callback_data="ai_reset")],
+                [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")]
+            ]))
+        except Exception as exc:
+            log.exception("Gemini request failed")
+            await wait.edit_text("⚠️ " + html.escape(str(exc)), reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔁 Повторить", callback_data="ai_start")],
+                [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")]
+            ]))
+        return
     await message.answer(
-        "Я работаю без ИИ и отвечаю через разделы меню. Выбери «Обучение», «Практика» или «Разбор заданий» 👇",
+        "Я работаю через разделы меню. Выбери «Обучение», «Практика», «Разбор заданий» или «ИИ-помощник» 👇",
         reply_markup=main_kb()
     )
 
