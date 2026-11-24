@@ -353,6 +353,7 @@ def main_kb():
         [InlineKeyboardButton(text="📝 Изложение и сочинение", callback_data="writing"),
          InlineKeyboardButton(text="📊 Мой прогресс", callback_data="stats")],
         [InlineKeyboardButton(text="🧠 Банк ошибок", callback_data="mistakes")],
+        [InlineKeyboardButton(text="📢 Наш Telegram-канал", url="https://t.me/ogeniustgk")],
         [InlineKeyboardButton(text="🔗 Материалы ФИПИ", url="https://fipi.ru/oge/demoversii-specifikacii-kodifikatory")]
     ])
 
